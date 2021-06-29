@@ -1,6 +1,6 @@
 {
   "name": "@-amazeelabs/silverback_cdn_redirect",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "author": "Amazee Labs <development@amazeelabs.com>",
   "publishConfig": {
     "access": "public",
@@ -8,5 +8,5 @@
     "repository": "git@github.com:AmazeeLabs/silverback_cdn_redirect.git",
     "branch": "main"
   },
-  "gitHead": "643b6f58dfa2dd17acd3d17c5f88b5f654b98704"
+  "gitHead": "3477ded83863ad4bb4a7cd6e42bdce0b89c5ceac"
 }
