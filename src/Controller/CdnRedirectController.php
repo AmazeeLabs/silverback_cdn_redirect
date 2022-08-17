@@ -123,7 +123,7 @@ class CdnRedirectController extends ControllerBase {
         ]);
         if ($response->getStatusCode() === 200) {
           return new Response($response->getBody(), 404, [
-            'cache-control' => 'public, max-age=' . 60*60*24*30,
+            'cache-control' => 'public, max-age=' . 60*5,
           ]);
         }
       }
@@ -138,6 +138,7 @@ class CdnRedirectController extends ControllerBase {
     // "backend.site/node/123" will lead to "frontend.site/node-alias" because
     // the redirect was already cached for "backend.site/cdn-redirect/node/123".
     $response->getCacheableMetadata()->addCacheContexts(['url']);
+    $response->getCacheableMetadata()->mergeCacheMaxAge(60*5);
     return $response;
   }
 }
