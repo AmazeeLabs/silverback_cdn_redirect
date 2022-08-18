@@ -3,10 +3,12 @@
 namespace Drupal\silverback_cdn_redirect\Controller;
 
 use Drupal\Core\Controller\ControllerBase;
+use Drupal\Core\Extension\ModuleHandlerInterface;
+use Drupal\Core\Path\PathValidatorInterface;
 use Drupal\Core\Routing\TrustedRedirectResponse;
 use Drupal\Core\Routing\UrlGeneratorInterface;
 use Drupal\silverback_cdn_redirect\EventSubscriber\CdnRedirectRouteSubscriber;
-use GuzzleHttp\Client;
+use GuzzleHttp\ClientInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -21,10 +23,49 @@ class CdnRedirectController extends ControllerBase {
   protected $urlGenerator;
 
   /**
+   * @var \GuzzleHttp\ClientInterface
+   */
+  protected $client;
+
+  /**
+   * @var \Drupal\Core\Path\PathValidatorInterface
+   */
+  protected $pathValidator;
+
+  /**
+   * @var \Drupal\Core\Extension\ModuleHandlerInterface
+   */
+  protected $moduleHandler;
+
+  protected $cacheHeaders;
+  protected $cdnAuthParams = null;
+
+  /**
    * Creates a CdnRedirectController object.
    */
-  public function __construct(UrlGeneratorInterface $url_generator) {
+  public function __construct(
+    UrlGeneratorInterface $url_generator,
+    ClientInterface $client,
+    PathValidatorInterface $pathValidator,
+    ModuleHandlerInterface $moduleHandler
+  ) {
     $this->urlGenerator = $url_generator;
+    $this->client = $client;
+    $this->cacheHeaders = [
+      // Five minutes cache for 404 and redirect responses.
+      'cache-control' => 'public, max-age=' . 60*5,
+    ];
+
+    $settings = \Drupal::config('silverback_cdn_redirect.settings');
+    if ($password = $settings->get('netlify_password')) {
+      $this->cdnAuthParams = [
+        'form_params' => [
+          'password' => $password,
+        ],
+      ];
+    }
+    $this->pathValidator = $pathValidator;
+    $this->moduleHandler = $moduleHandler;
   }
 
   /**
@@ -33,6 +74,9 @@ class CdnRedirectController extends ControllerBase {
   public static function create(ContainerInterface $container) {
     return new static(
       $container->get('url_generator'),
+      $container->get('silverback_cdn_redirect.http_client'),
+      $container->get('path.validator'),
+      $container->get('module_handler')
     );
   }
 
@@ -44,10 +88,6 @@ class CdnRedirectController extends ControllerBase {
       return new Response('The module is not configured', 500);
     }
 
-    $cacheHeaders = [
-      // Five minutes cache for 404 and redirect responses.
-      'cache-control' => 'public, max-age=' . 60*5,
-    ];
 
     $location = NULL;
     $responseCode = NULL;
@@ -79,6 +119,23 @@ class CdnRedirectController extends ControllerBase {
       }
       $responseCode = $response->getStatusCode();
     } elseif ($response->getStatusCode() === 200) {
+
+      if (($url = $this->pathValidator->getUrlIfValidWithoutAccessCheck($path)) && $url->isRouted() && $url->access()) {
+        // Check if the path leads to an entity. In that case we (might) want to
+        // display a client side rendered template.
+        [, $type] = explode('.', $url->getRouteName());
+        $parameters = $url->getRouteParameters();
+        if ($type && isset($parameters[$type]) && $id = $parameters[$type]) {
+          $path = false;
+          $context = ['entity_type' => $type, 'entity_id' => $id];
+          $this->moduleHandler->alter('silverback_cdn_csr_template_path', $path, $context);
+
+          if ($path && $response = $this->rewriteToCDN($baseUrl . $path, 200)) {
+            return $response;
+          }
+        }
+      }
+
       // If the returned response is not a redirect, we still want to check if
       // there is a path alias for the current path. If it exists, then we
       // should redirect to it.
@@ -104,29 +161,8 @@ class CdnRedirectController extends ControllerBase {
       // Fallback behavior: redirect to 404 page.
       $location = $baseUrl . $prefix . $notFoundPath;
       $responseCode = 302;
-
-      // Desired behavior: fetch the 404 page and return its contents.
-      $http = new Client([
-        'http_errors' => FALSE,
-        // We might need cookies if Netlify site is password protected.
-        'cookies' => TRUE,
-      ]);
-      $response = $http->get($location);
-      if ($response->getStatusCode() === 200) {
-        return new Response($response->getBody(), 404, $cacheHeaders);
-      }
-      elseif (
-        $response->getStatusCode() === 401 &&
-        ($password = $settings->get('netlify_password'))
-      ) {
-        $response = $http->post($location, [
-          'form_params' => [
-            'password' => $password,
-          ],
-        ]);
-        if ($response->getStatusCode() === 200) {
-          return new Response($response->getBody(), 404, $cacheHeaders);
-        }
+      if ($response = $this->rewriteToCDN($location, 404)) {
+        return $response;
       }
     }
 
@@ -134,11 +170,28 @@ class CdnRedirectController extends ControllerBase {
       return new Response('Circular redirect', 500);
     }
 
-    $response = new TrustedRedirectResponse($location, $responseCode, $cacheHeaders);
+    $response = new TrustedRedirectResponse($location, $responseCode, $this->cacheHeaders);
     // Vary the cache by the full URL. Otherwise, it can happen that
     // "backend.site/node/123" will lead to "frontend.site/node-alias" because
     // the redirect was already cached for "backend.site/cdn-redirect/node/123".
     $response->getCacheableMetadata()->addCacheContexts(['url']);
     return $response;
+  }
+
+  protected function rewriteToCDN($location, $statusCode) {
+    // Desired behavior: fetch the 404 page and return its contents.
+    $response = $this->client->request('GET', $location);
+    if ($response->getStatusCode() === 200) {
+      return new Response($response->getBody(), $statusCode, $this->cacheHeaders);
+    }
+    elseif (
+      $response->getStatusCode() === 401 &&
+      $this->cdnAuthParams
+    ) {
+      $response = $this->client->request('POST', $location, $this->cdnAuthParams);
+      if ($response->getStatusCode() === 200) {
+        return new Response($response->getBody(), $statusCode, $this->cacheHeaders);
+      }
+    }
   }
 }
