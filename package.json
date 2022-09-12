@@ -1,6 +1,6 @@
 {
   "name": "@-amazeelabs/silverback_cdn_redirect",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "author": "Amazee Labs <development@amazeelabs.com>",
   "publishConfig": {
     "access": "public",
@@ -15,5 +15,5 @@
     "test:unit": "./test.sh",
     "version": "sync-composer-version"
   },
-  "gitHead": "96344ece4dc406828633cadbaf8384b5d339935e"
+  "gitHead": "9cd73b4b48616b4be57bf7b8872975eddaef4c1a"
 }
